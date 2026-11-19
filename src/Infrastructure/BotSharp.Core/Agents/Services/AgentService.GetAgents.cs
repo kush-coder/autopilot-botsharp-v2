@@ -1,0 +1,167 @@
+using BotSharp.Abstraction.Models;
+using BotSharp.Abstraction.Routing.Settings;
+using BotSharp.Core.Plugins;
+
+namespace BotSharp.Core.Agents.Services;
+
+public partial class AgentService
+{
+    [SharpCache(10)]
+    public async Task<PagedItems<Agent>> GetAgents(AgentFilter filter)
+    {
+        var agents = await _db.GetAgents(filter);
+
+        var routeSetting = _services.GetRequiredService<RoutingSettings>();
+        var plugins = await _services.GetRequiredService<PluginLoader>().GetPlugins(_services);
+        foreach (var agent in agents)
+        {
+            agent.Plugin = MatchPlugin(plugins, agent.Id);
+        }
+
+        agents = agents.Where(x => x.Installed).ToList();
+        var pager = filter?.Pager ?? new Pagination();
+        return new PagedItems<Agent>
+        {
+            Items = agents.Skip(pager.Offset).Take(pager.Size),
+            Count = agents.Count()
+        };
+    }
+
+    [SharpCache(10)]
+    public async Task<List<IdName>> GetAgentOptions(List<string>? agentIdsOrNames, bool byName = false)
+    {
+        var agents = byName ? 
+            await _db.GetAgents(new AgentFilter
+            {
+                AgentNames = !agentIdsOrNames.IsNullOrEmpty() ? agentIdsOrNames : null
+            }) :
+            await _db.GetAgents(new AgentFilter
+            {
+                AgentIds = !agentIdsOrNames.IsNullOrEmpty() ? agentIdsOrNames : null
+            });
+
+        return agents?.Select(x => new IdName(x.Id, x.Name))?.OrderBy(x => x.Name)?.ToList() ?? [];
+    }
+
+    [SharpCache(10, perInstanceCache: true)]
+    public async Task<Agent> GetAgent(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || id == Guid.Empty.ToString())
+        {
+            _logger.LogWarning($"Can't find agent {id}, AgentId is empty.");
+            return null;
+        }
+
+        var profile = await _db.GetAgent(id);
+        if (profile == null)
+        {
+            _logger.LogError($"Can't find agent {id}");
+            return null;
+        }
+
+        // Load llm config
+        var agentSetting = _services.GetRequiredService<AgentSettings>();
+        if (profile.LlmConfig == null)
+        {
+            // A copy: flagging IsInherit on the shared settings instance marked the default config itself as inherited.
+            profile.LlmConfig = agentSetting.LlmConfig.DeepClone() ?? new AgentLlmConfig();
+            profile.LlmConfig.IsInherit = true;
+        }
+        else if (string.IsNullOrEmpty(profile.LlmConfig?.Provider) || string.IsNullOrEmpty(profile.LlmConfig?.Model))
+        {
+            profile.LlmConfig.Provider = agentSetting.LlmConfig.Provider;
+            profile.LlmConfig.Model = agentSetting.LlmConfig.Model;
+        }
+
+        profile.Plugin = await GetPlugin(profile.Id);
+
+        AddDefaultInstruction(profile, profile.Instruction);
+
+        return profile;
+    }
+
+    /// <summary>
+    /// Add default instruction to ChannelInstructions
+    /// </summary>
+    private void AddDefaultInstruction(Agent agent, string instruction)
+    {
+        //check if instruction is empty
+        if (string.IsNullOrWhiteSpace(instruction))
+        {
+            return;
+        }
+
+        //check if instruction is already set
+        var instructions = new List<ChannelInstruction>(agent.ChannelInstructions);
+        if (instructions.Exists(p => string.IsNullOrEmpty(p.Channel)))
+        {
+            return;
+        }
+
+        //Add default instruction to ChannelInstructions
+        var defaultInstruction = new ChannelInstruction()
+        {
+            Channel = string.Empty,
+            Instruction = instruction
+        };
+        instructions.Insert(0, defaultInstruction);
+        agent.ChannelInstructions = instructions;
+    }
+
+#if !DEBUG
+    [SharpCache(10, perInstanceCache: true)]
+#endif
+    public async Task<AgentTemplate?> GetAgentTemplateDetail(string agentId, string templateName)
+    {
+        var template = await _db.GetAgentTemplateDetail(agentId, templateName);
+        if (template == null)
+        {
+            return template;
+        }
+
+        if (template.LlmConfig == null || !template.LlmConfig.IsValid)
+        {
+            var agent = await _db.GetAgent(agentId);
+            if (!string.IsNullOrEmpty(agent?.LlmConfig?.Provider)
+                && !string.IsNullOrEmpty(agent?.LlmConfig?.Model))
+            {
+                template.LlmConfig = new AgentTemplateLlmConfig
+                {
+                    Provider = agent.LlmConfig.Provider,
+                    Model = agent.LlmConfig.Model,
+                    MaxOutputTokens = agent.LlmConfig.MaxOutputTokens,
+                    ReasoningEffortLevel = agent.LlmConfig.ReasoningEffortLevel
+                };
+            }
+        }
+
+        return template.DeepClone();
+    }
+
+    public async Task InheritAgent(Agent agent)
+    {
+        if (string.IsNullOrWhiteSpace(agent?.InheritAgentId))
+        {
+            return;
+        }
+
+        var inheritedAgent = await GetAgent(agent.InheritAgentId);
+        agent.Templates.AddRange(inheritedAgent.Templates
+            // exclude private template
+            .Where(x => !x.Name.StartsWith("."))
+            // exclude duplicate name
+            .Where(x => !agent.Templates.Exists(t => t.Name == x.Name)));
+
+        agent.Functions.AddRange(inheritedAgent.Functions
+            // exclude private template
+            .Where(x => !x.Name.StartsWith("."))
+            // exclude duplicate name
+            .Where(x => !agent.Functions.Exists(t => t.Name == x.Name)));
+
+        if (string.IsNullOrWhiteSpace(agent.Instruction))
+        {
+            agent.Instruction = inheritedAgent.Instruction;
+            AddDefaultInstruction(agent, inheritedAgent.Instruction);
+        }
+    }
+}

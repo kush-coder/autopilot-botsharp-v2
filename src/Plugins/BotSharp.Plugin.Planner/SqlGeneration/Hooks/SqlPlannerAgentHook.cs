@@ -1,0 +1,36 @@
+using BotSharp.Abstraction.Agents;
+using BotSharp.Abstraction.Agents.Settings;
+using BotSharp.Abstraction.Knowledges;
+using BotSharp.Abstraction.MLTasks;
+using BotSharp.Plugin.Planner.Enums;
+
+namespace BotSharp.Plugin.Planner.SqlGeneration.Hooks;
+
+public class SqlPlannerAgentHook : AgentHookBase
+{
+    public override string SelfId => PlannerAgentId.SqlPlanner;
+
+    public SqlPlannerAgentHook(IServiceProvider services, AgentSettings settings)
+        : base(services, settings)
+    {
+    }
+
+    public override async Task<bool> OnInstructionLoaded(string template, IDictionary<string, object> dict)
+    {
+        var knowledgeHooks = _services.GetServices<IKnowledgeHook>();
+
+        // Get global knowledges
+        var knowledges = new List<string>();
+        foreach (var hook in knowledgeHooks)
+        {
+            var k = await hook.GetGlobalKnowledges(new RoleDialogModel(AgentRole.User, template)
+            {
+                CurrentAgentId = PlannerAgentId.SqlPlanner
+            });
+            knowledges.AddRange(k);
+        }
+        dict["global_knowledges"] = knowledges;
+
+        return true;
+    }
+}

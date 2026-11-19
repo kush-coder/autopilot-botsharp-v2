@@ -1,0 +1,164 @@
+using BotSharp.Abstraction.Infrastructures.Enums;
+using BotSharp.Abstraction.MLTasks;
+using System.Diagnostics;
+
+namespace BotSharp.Core.Conversations.Services;
+
+public class TokenStatistics : ITokenStatistics
+{
+    private long _promptTokenCount = 0;
+    private float _promptCost = 0f;
+    private long _completionTokenCount = 0;
+    private float _completionCost = 0f;
+    private readonly IServiceProvider _services;
+    private readonly ILogger _logger;
+    public long Total => _promptTokenCount + _completionTokenCount;
+    public string _model;
+    private Stopwatch _timer;
+
+    public float Cost => _promptCost + _completionCost;
+    public float AccumulatedCost
+    {
+        get 
+        {
+            var stat = _services.GetRequiredService<IConversationStateService>();
+            return stat.GetState(TokenStateConst.LLM_TOTAL_COST, 0f);
+        }
+    }
+
+    public TokenStatistics(IServiceProvider services, ILogger<TokenStatistics> logger) 
+    { 
+        _services = services;
+        _logger = logger;
+    }
+
+    public async Task AddToken(TokenStatsModel stats, RoleDialogModel message)
+    {
+        _model = stats.Model;
+        _promptTokenCount += stats.TotalInputTokens;
+        _completionTokenCount += stats.TotalOutputTokens;
+
+        var settingsService = _services.GetRequiredService<ILlmProviderService>();
+        var settings = settingsService.GetSetting(stats.Provider, _model);
+
+        #region Text tokens
+        var textCostTier = settings?.Cost?.GetTextTokenCostTier(stats.TotalTextInputTokens, stats.ServiceTier);
+        var deltaTextInputCost = GetDeltaCost(stats.TextInputTokens,
+            textCostTier?.TextInputCost ?? settings?.Cost?.TextInputCost);
+        var deltaCachedTextInputCost = GetDeltaCost(stats.CachedTextInputTokens,
+            textCostTier?.CachedTextInputCost ?? settings?.Cost?.CachedTextInputCost);
+        var deltaCachedTextInputWriteCost = GetDeltaCost(stats.CachedTextInputWriteTokens,
+            textCostTier?.CachedTextInputWriteCost ?? settings?.Cost?.CachedTextInputWriteCost);
+        var deltaTextOutputCost = GetDeltaCost(stats.TextOutputTokens,
+            textCostTier?.TextOutputCost ?? settings?.Cost?.TextOutputCost);
+        #endregion
+
+        #region Audio tokens
+        var deltaAudioInputCost = GetDeltaCost(stats.AudioInputTokens, settings?.Cost?.AudioInputCost);
+        var deltaCachedAudioInputCost = GetDeltaCost(stats.CachedAudioInputTokens, settings?.Cost?.CachedAudioInputCost);
+        var deltaAudioOutputCost = GetDeltaCost(stats.AudioOutputTokens, settings?.Cost?.AudioOutputCost);
+        #endregion
+
+        #region Image tokens
+        var deltaImageInputCost = GetDeltaCost(stats.ImageInputTokens, settings?.Cost?.ImageInputCost);
+        var deltaCachedImageInputCost = GetDeltaCost(stats.CachedImageInputTokens, settings?.Cost?.CachedImageInputCost);
+        var deltaImageOutputCost = GetDeltaCost(stats.ImageOutputTokens, settings?.Cost?.ImageOutputCost);
+        #endregion
+
+        #region Image generation
+        var deltaImageGenerationCost = stats.ImageGenerationCount * stats.ImageGenerationUnitCost;
+        #endregion
+
+
+        var deltaPromptCost = deltaTextInputCost + deltaCachedTextInputCost + deltaCachedTextInputWriteCost
+                            + deltaAudioInputCost + deltaCachedAudioInputCost
+                            + deltaImageInputCost + deltaCachedImageInputCost;
+        var deltaCompletionCost = deltaTextOutputCost + deltaAudioOutputCost + deltaImageOutputCost;
+
+        var deltaTotal = deltaPromptCost + deltaCompletionCost + deltaImageGenerationCost;
+        _promptCost += deltaPromptCost;
+        _completionCost += deltaCompletionCost;
+
+        // Accumulated Token
+        var state = _services.GetRequiredService<IConversationStateService>();
+        var inputCount = state.GetState(TokenStateConst.PROMPT_TOTAL, 0);
+        state.SetState(TokenStateConst.PROMPT_TOTAL, stats.TotalInputTokens + inputCount, isNeedVersion: false, source: StateSource.Application);
+        var outputCount = state.GetState(TokenStateConst.COMPLETION_TOTAL, 0);
+        state.SetState(TokenStateConst.COMPLETION_TOTAL, stats.TotalOutputTokens + outputCount, isNeedVersion: false, source: StateSource.Application);
+
+        // Total cost
+        var total_cost = state.GetState(TokenStateConst.LLM_TOTAL_COST, 0f);
+        total_cost += deltaTotal;
+        state.SetState(TokenStateConst.LLM_TOTAL_COST, total_cost, isNeedVersion: false, source: StateSource.Application);
+
+        // Save stats
+        var metric = StatsMetric.AgentLlmCost;
+        var dim = "agent";
+        var agentId = message.CurrentAgentId ?? string.Empty;
+        var globalStats = _services.GetRequiredService<IBotSharpStatsService>();
+        var delta = new BotSharpStatsDelta
+        {
+            AgentId = agentId,
+            RecordTime = DateTime.UtcNow,
+            IntervalType = StatsInterval.Day,
+            CountDelta = new()
+            {
+                AgentCallCountDelta = 1,
+                ImageGenerationTotalCountDelta = stats.ImageGenerationCount
+            },
+            LlmCostDelta = new()
+            {
+                PromptTokensDelta = stats.TotalInputTokens,
+                CompletionTokensDelta = stats.TotalOutputTokens,
+                PromptTotalCostDelta = deltaPromptCost,
+                CompletionTotalCostDelta = deltaCompletionCost,
+                ImageGenerationTotalCostDelta = deltaImageGenerationCost
+            }
+        };
+        await globalStats.UpdateStats($"global-{metric}-{dim}-{agentId}", delta);
+    }
+
+    public void PrintStatistics()
+    {
+        if (_timer == null)
+        {
+            _timer = Stopwatch.StartNew();
+        }
+        else
+        {
+            _timer.Start();
+        }
+        var stats = $"Token Usage: {_promptTokenCount} prompt + {_completionTokenCount} completion = {Total} total tokens ({_timer.ElapsedMilliseconds / 1000f:f2}s). One-Way cost: {Cost:C4}, accumulated cost: {AccumulatedCost:C4}. [{_model}]";
+#if DEBUG
+        Console.WriteLine(stats);
+#else
+        _logger.LogInformation(stats);
+#endif
+    }
+
+    public void StartTimer()
+    {
+        if (_timer == null)
+        {
+            _timer = Stopwatch.StartNew();
+        }
+        else
+        {
+            _timer.Start();
+        }
+    }
+
+    public void StopTimer()
+    {
+        if (_timer == null)
+        {
+            return;
+        }
+        _timer.Stop();
+    }
+
+    private float GetDeltaCost(long tokens, float? unitCost)
+    {
+        return tokens / 1000f * (unitCost ?? 0f);
+    }
+}

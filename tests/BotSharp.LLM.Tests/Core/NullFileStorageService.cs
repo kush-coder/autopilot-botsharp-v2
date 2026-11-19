@@ -1,0 +1,139 @@
+using BotSharp.Abstraction.Files;
+using BotSharp.Abstraction.Files.Models;
+using BotSharp.Abstraction.Files.Options;
+
+namespace BotSharp.Plugin.Google.Core
+{
+    public class NullFileStorageService : IFileStorageService
+    {
+        public string GetDirectory(string conversationId)
+        {
+            return $"FakeDirectory/{conversationId}";
+        }
+
+        public IEnumerable<string> GetFiles(string relativePath, string? searchQuery = null)
+        {
+            return new List<string> { "FakeFile1.txt", "FakeFile2.txt" };
+        }
+
+        public BinaryData GetFileBytes(string fileStorageUrl)
+        {
+            var bytes = new byte[] { 0x00, 0x01, 0x02 };
+            return BinaryData.FromBytes(bytes);
+        }
+
+        public bool SaveFileStreamToPath(string filePath, Stream stream)
+        {
+            return true;
+        }
+
+        public bool SaveFileBytesToPath(string filePath, BinaryData binary)
+        {
+            return true;
+        }
+
+        public string GetParentDir(string dir, int level = 1)
+        {
+            return "FakeParentDirectory";
+        }
+
+        public bool ExistDirectory(string? dir)
+        {
+            return true;
+        }
+
+        public void CreateDirectory(string dir)
+        {
+        }
+
+        public void DeleteDirectory(string dir)
+        {
+        }
+
+        public string BuildDirectory(params string[] segments)
+        {
+            return string.Join("/", segments);
+        }
+
+        public Task<IEnumerable<MessageFileModel>> GetMessageFileScreenshotsAsync(string conversationId, IEnumerable<string> messageIds, MessageFileScreenshotOptions options)
+        {
+            return Task.FromResult<IEnumerable<MessageFileModel>>(new List<MessageFileModel>
+            {
+                new MessageFileModel { FileName = "Screenshot1.png" },
+                new MessageFileModel { FileName = "Screenshot2.png" }
+            });
+        }
+
+        public IEnumerable<MessageFileModel> GetMessageFiles(string conversationId, IEnumerable<string> messageIds, MessageFileOptions? options = null)
+        {
+            return new List<MessageFileModel>
+            {
+                new MessageFileModel { FileName = "File1.docx" },
+                new MessageFileModel { FileName = "File2.pdf" }
+            };
+        }
+
+        public string GetMessageFile(string conversationId, string messageId, string source, string index, string fileName)
+        {
+            return $"FakePath/{fileName}";
+        }
+
+        public bool SaveMessageFiles(string conversationId, string messageId, string source, List<FileDataModel> files)
+        {
+            return true;
+        }
+
+        public bool DeleteMessageFiles(string conversationId, IEnumerable<string> messageIds, string targetMessageId,
+            string? newMessageId = null)
+        {
+            return true;
+        }
+
+        public bool DeleteConversationFiles(IEnumerable<string> conversationIds)
+        {
+            return true;
+        }
+
+        public Task<string> GetUserAvatar()
+        {
+            return Task.FromResult("FakeUserAvatar.png");
+        }
+
+        public Task<bool> SaveUserAvatar(FileDataModel file)
+        {
+            return Task.FromResult(true);
+        }
+
+        public bool SaveSpeechFile(string conversationId, string fileName, BinaryData data)
+        {
+            return true;
+        }
+
+        public BinaryData GetSpeechFile(string conversationId, string fileName)
+        {
+            return BinaryData.FromBytes(new byte[] { 0x03, 0x04, 0x05 });
+        }
+
+        public bool SaveKnowledgeBaseFile(string collectionName, string knowledgebaseProvider, Guid fileId, string fileName,
+            BinaryData fileData)
+        {
+            return true;
+        }
+
+        public bool DeleteKnowledgeFile(string collectionName, string knowledgebaseProvider, Guid? fileId = null)
+        {
+            return true;
+        }
+
+        public string GetKnowledgeBaseFileUrl(string collectionName, string knowledgebaseProvider, Guid fileId, string fileName)
+        {
+            return $"https://fakeurl.com/{fileName}";
+        }
+
+        public BinaryData GetKnowledgeBaseFileBinaryData(string collectionName, string knowledgebaseProvider, Guid fileId,
+            string fileName)
+        {
+            return BinaryData.FromBytes(new byte[] { 0x06, 0x07, 0x08 });
+        }
+    }
+}

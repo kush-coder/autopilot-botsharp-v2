@@ -1,0 +1,261 @@
+using BotSharp.Abstraction.Knowledges.Filters;
+using BotSharp.Abstraction.Knowledges.Models;
+using BotSharp.Abstraction.VectorStorage.Filters;
+using BotSharp.Abstraction.VectorStorage.Models;
+
+namespace BotSharp.Plugin.MongoStorage.Repository;
+
+public partial class MongoRepository
+{
+    #region Configs
+    public async Task<bool> AddKnowledgeCollectionConfigs(List<VectorCollectionConfig> configs, bool reset = false)
+    {
+        var filter = Builders<KnowledgeCollectionConfigDocument>.Filter.Empty;
+        var docs = configs?.Where(x => !string.IsNullOrWhiteSpace(x.Name))
+            .Select(x => new KnowledgeCollectionConfigDocument
+            {
+                Id = Guid.NewGuid().ToString(),
+                Name = x.Name,
+                Type = x.Type,
+                VectorStore = KnowledgeVectorStoreConfigMongoModel.ToMongoModel(x.VectorStore),
+                TextEmbedding = KnowledgeEmbeddingConfigMongoModel.ToMongoModel(x.TextEmbedding)
+            })?.ToList() ?? [];
+
+        if (reset)
+        {
+            await _dc.KnowledgeCollectionConfigs.DeleteManyAsync(filter);
+            await _dc.KnowledgeCollectionConfigs.InsertManyAsync(docs);
+            return true;
+        }
+
+        // Update if collection already exists, otherwise insert.
+        var insertDocs = new List<KnowledgeCollectionConfigDocument>();
+        var updateDocs = new List<KnowledgeCollectionConfigDocument>();
+
+        var names = docs.Select(x => x.Name).ToList();
+        filter = Builders<KnowledgeCollectionConfigDocument>.Filter.In(x => x.Name, names);
+        var savedConfigs = await _dc.KnowledgeCollectionConfigs.Find(filter).ToListAsync();
+        
+        foreach (var doc in docs)
+        {
+            var found = savedConfigs.FirstOrDefault(x => x.Name == doc.Name);
+            if (found != null)
+            {
+                found.Type = doc.Type;
+                found.VectorStore = doc.VectorStore;
+                found.TextEmbedding = doc.TextEmbedding;
+                updateDocs.Add(found);
+            }
+            else
+            {
+                insertDocs.Add(doc);
+            }
+        }
+
+        if (!insertDocs.IsNullOrEmpty())
+        {
+            await _dc.KnowledgeCollectionConfigs.InsertManyAsync(docs);
+        }
+
+        if (!updateDocs.IsNullOrEmpty())
+        {
+            foreach (var doc in updateDocs)
+            {
+                filter = Builders<KnowledgeCollectionConfigDocument>.Filter.Eq(x => x.Id, doc.Id);
+                await _dc.KnowledgeCollectionConfigs.ReplaceOneAsync(filter, doc);
+            }
+        }
+        
+        return true;
+    }
+
+    public async Task<bool> DeleteKnowledgeCollectionConfig(string collectionName)
+    {
+        if (string.IsNullOrWhiteSpace(collectionName)) return false;
+
+        var filter = Builders<KnowledgeCollectionConfigDocument>.Filter.Eq(x => x.Name, collectionName);
+        var deleted = await _dc.KnowledgeCollectionConfigs.DeleteManyAsync(filter);
+        return deleted.DeletedCount > 0;
+    }
+
+    public async Task<IEnumerable<VectorCollectionConfig>> GetKnowledgeCollectionConfigs(VectorCollectionConfigFilter filter)
+    {
+        if (filter == null)
+        {
+            return Enumerable.Empty<VectorCollectionConfig>();
+        }
+
+        var builder = Builders<KnowledgeCollectionConfigDocument>.Filter;
+        var filters = new List<FilterDefinition<KnowledgeCollectionConfigDocument>> { builder.Empty };
+
+        // Apply filters
+        if (!filter.CollectionNames.IsNullOrEmpty())
+        {
+            filters.Add(builder.In(x => x.Name, filter.CollectionNames));
+        }
+
+        if (!filter.CollectionTypes.IsNullOrEmpty())
+        {
+            filters.Add(builder.In(x => x.Type, filter.CollectionTypes));
+        }
+
+        if (!filter.VectorStorageProviders.IsNullOrEmpty())
+        {
+            filters.Add(builder.In(x => x.VectorStore.Provider, filter.VectorStorageProviders));
+        }
+
+        // Get data
+        var configs = await _dc.KnowledgeCollectionConfigs.Find(Builders<KnowledgeCollectionConfigDocument>.Filter.And(filters)).ToListAsync();
+
+        return configs.Select(x => new VectorCollectionConfig
+        {
+            Name = x.Name,
+            Type = x.Type,
+            VectorStore = KnowledgeVectorStoreConfigMongoModel.ToDomainModel(x.VectorStore),
+            TextEmbedding = KnowledgeEmbeddingConfigMongoModel.ToDomainModel(x.TextEmbedding)
+        });
+    }
+
+#if !DEBUG
+    [SharpCache(10)]
+#endif
+    public async Task<VectorCollectionConfig> GetKnowledgeCollectionConfig(string collectionName, string knowledgebaseProvider)
+    {
+        var configs = await GetKnowledgeCollectionConfigs(new VectorCollectionConfigFilter
+        {
+            CollectionNames = [collectionName],
+            VectorStorageProviders = [knowledgebaseProvider]
+        });
+        return configs?.FirstOrDefault();
+    }
+    #endregion
+
+    #region Documents
+    public async Task<bool> SaveKnolwedgeBaseFileMeta(KnowledgeFileMetaData metaData)
+    {
+        if (metaData == null
+            || string.IsNullOrWhiteSpace(metaData.Collection)
+            || string.IsNullOrWhiteSpace(metaData.VectorStoreProvider))
+        {
+            return false;
+        }
+
+        var doc = new KnowledgeCollectionFileMetaDocument
+        {
+            Id = Guid.NewGuid().ToString(),
+            Collection = metaData.Collection,
+            FileId = metaData.FileId,
+            FileName = metaData.FileName,
+            FileSource = metaData.FileSource,
+            ContentType = metaData.ContentType,
+            VectorStoreProvider = metaData.VectorStoreProvider,
+            VectorDataIds = metaData.VectorDataIds,
+            RefData = KnowledgeFileMetaRefMongoModel.ToMongoModel(metaData.RefData),
+            CreatedDate = metaData.CreateDate,
+            CreateUserId = metaData.CreateUserId
+        };
+
+        await _dc.KnowledgeCollectionFileMeta.InsertOneAsync(doc);
+        return true;
+    }
+
+    public async Task<bool> DeleteKnolwedgeBaseFileMeta(string collectionName, string knowledgebaseProvider, Guid? fileId = null)
+    {
+        if (string.IsNullOrWhiteSpace(collectionName)
+            || string.IsNullOrWhiteSpace(knowledgebaseProvider))
+        {
+            return false;
+        }
+
+        var builder = Builders<KnowledgeCollectionFileMetaDocument>.Filter;
+        var filters = new List<FilterDefinition<KnowledgeCollectionFileMetaDocument>>()
+        {
+            builder.Eq(x => x.Collection, collectionName),
+            builder.Eq(x => x.VectorStoreProvider, knowledgebaseProvider)
+        };
+
+        if (fileId != null)
+        {
+            filters.Add(builder.Eq(x => x.FileId, fileId));
+        }
+
+        var res = await _dc.KnowledgeCollectionFileMeta.DeleteManyAsync(builder.And(filters));
+        return res.DeletedCount > 0;
+    }
+
+    public async Task<PagedItems<KnowledgeFileMetaData>> GetKnowledgeBaseFileMeta(string collectionName, string knowledgebaseProvider, KnowledgeFileFilter filter)
+    {
+        if (string.IsNullOrWhiteSpace(collectionName)
+            || string.IsNullOrWhiteSpace(knowledgebaseProvider))
+        {
+            return new PagedItems<KnowledgeFileMetaData>();
+        }
+
+        var builder = Builders<KnowledgeCollectionFileMetaDocument>.Filter;
+        var docFilters = new List<FilterDefinition<KnowledgeCollectionFileMetaDocument>>()
+        {
+            builder.Eq(x => x.Collection, collectionName),
+            builder.Eq(x => x.VectorStoreProvider, knowledgebaseProvider)
+        };
+        
+        // Apply filters
+        if (filter != null)
+        {
+            if (!filter.FileIds.IsNullOrEmpty())
+            {
+                docFilters.Add(builder.In(x => x.FileId, filter.FileIds));
+            }
+
+            if (!filter.FileNames.IsNullOrEmpty())
+            {
+                docFilters.Add(builder.In(x => x.FileName, filter.FileNames));
+            }
+
+            if (!filter.FileSources.IsNullOrEmpty())
+            {
+                docFilters.Add(builder.In(x => x.FileSource, filter.FileSources));
+            }
+
+            if (!filter.ContentTypes.IsNullOrEmpty())
+            {
+                docFilters.Add(builder.In(x => x.ContentType, filter.ContentTypes));
+            }
+        }
+
+        var filterDef = builder.And(docFilters);
+        var sortDef = Builders<KnowledgeCollectionFileMetaDocument>.Sort.Descending(x => x.CreatedDate);
+
+        var docsTask = _dc.KnowledgeCollectionFileMeta.FindAsync(filterDef, options: new()
+        {
+            Sort = sortDef,
+            Skip = filter.Offset,
+            Limit = filter.Size
+        });
+        var countTask = _dc.KnowledgeCollectionFileMeta.CountDocumentsAsync(filterDef);
+        await Task.WhenAll([docsTask, countTask]);
+
+        var docs = docsTask.Result.ToList();
+        var count = countTask.Result;
+
+        var files = docs?.Select(x => new KnowledgeFileMetaData
+        {
+            Collection = x.Collection,
+            FileId = x.FileId,
+            FileName = x.FileName,
+            FileSource = x.FileSource,
+            ContentType = x.ContentType,
+            VectorStoreProvider = x.VectorStoreProvider,
+            VectorDataIds = x.VectorDataIds,
+            RefData = KnowledgeFileMetaRefMongoModel.ToDomainModel(x.RefData),
+            CreateDate = x.CreatedDate,
+            CreateUserId = x.CreateUserId
+        })?.ToList() ?? [];
+
+        return new PagedItems<KnowledgeFileMetaData>
+        {
+            Items = files,
+            Count = count
+        };
+    }
+    #endregion
+}

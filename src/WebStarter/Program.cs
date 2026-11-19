@@ -1,0 +1,74 @@
+using BotSharp.Abstraction.Messaging.JsonConverters;
+using BotSharp.Core;
+using BotSharp.Core.MCP;
+using BotSharp.Logger;
+using BotSharp.OpenAPI;
+using BotSharp.PizzaBot.MCPServer.Tools;
+using BotSharp.Plugin.ChatHub;
+using BotSharp.Plugin.MultiTenancy.Extensions;
+using Serilog;
+using StackExchange.Redis;
+
+var builder = WebApplication.CreateBuilder(args);
+
+Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.Console()
+            .CreateLogger();
+
+builder.Host.UseSerilog(Log.Logger);
+
+string[] allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? new[]
+    {
+        "http://0.0.0.0:5015",
+        "https://botsharp.scisharpstack.org",
+        "https://chat.scisharpstack.org"
+    };
+
+ // Add BotSharp
+ builder.Services.AddBotSharpCore(builder.Configuration, options =>
+ {
+     options.JsonSerializerOptions.Converters.Add(new RichContentJsonConverter());
+     options.JsonSerializerOptions.Converters.Add(new TemplateMessageJsonConverter());
+ }).AddBotSharpOpenAPI(builder.Configuration, allowedOrigins, builder.Environment, true)
+   .AddBotSharpMCP(builder.Configuration)
+   .AddBotSharpLogger(builder.Configuration);
+
+// Add service defaults & Aspire components.
+builder.AddServiceDefaults();
+
+// Add SignalR for WebSocket
+builder.Services.AddSignalR()
+    // Enable Redis backplane for SignalR
+    /*.AddStackExchangeRedis("127.0.0.1", o =>
+    {
+        o.Configuration.ChannelPrefix = RedisChannel.Literal("botsharp");
+    })*/;
+
+builder.Services.AddMcpServer()
+    .WithHttpTransport()
+    .WithTools<MakePaymentTool>()
+    .WithTools<PizzaPricesTool>()
+    .WithTools<PlaceOrderTool>();
+
+var app = builder.Build();
+
+app.UseWebSockets();
+
+// Enable SignalR
+app.MapHub<SignalRHub>("/chatHub");
+app.UseMiddleware<ChatHubMiddleware>();
+app.UseMiddleware<ChatStreamMiddleware>();
+
+// Enable Multi-Tenancy
+app.UseMultiTenancy();
+
+// Use BotSharp
+app.UseBotSharp()
+    .UseBotSharpOpenAPI(app.Environment)
+    .UseBotSharpUI();
+
+// Map MCP endpoint – clients connect to: https://<host>/mcp
+app.MapMcp("/mcp");
+
+app.Run();

@@ -1,0 +1,412 @@
+using BotSharp.Abstraction.Loggers.Models;
+using BotSharp.Abstraction.Repositories.Filters;
+using BotSharp.Abstraction.Repositories.Models;
+using MongoDB.Driver;
+using System.Text.Json;
+
+namespace BotSharp.Plugin.MongoStorage.Repository;
+
+public partial class MongoRepository
+{
+    #region LLM Completion Log
+    public async Task SaveLlmCompletionLog(LlmCompletionLog log)
+    {
+        if (log == null) return;
+
+        var conversationId = log.ConversationId.IfNullOrEmptyAs(Guid.NewGuid().ToString());
+        var messageId = log.MessageId.IfNullOrEmptyAs(Guid.NewGuid().ToString());
+
+        var data = new LlmCompletionLogDocument
+        {
+            Id = Guid.NewGuid().ToString(),
+            ConversationId = conversationId,
+            MessageId = messageId,
+            AgentId = log.AgentId,
+            Prompt = log.Prompt,
+            Response = log.Response,
+            CreatedTime = log.CreatedTime
+        };
+        await _dc.LlmCompletionLogs.InsertOneAsync(data);
+    }
+
+    #endregion
+
+    #region Conversation Content Log
+    public async Task SaveConversationContentLog(ContentLogOutputModel log)
+    {
+        if (log == null) return;
+
+        var filter = Builders<ConversationDocument>.Filter.Eq(x => x.Id, log.ConversationId);
+        var found = await _dc.Conversations.Find(filter).FirstOrDefaultAsync();
+        if (found == null) return;
+
+        var logDoc = new ConversationContentLogDocument
+        {
+            ConversationId = log.ConversationId,
+            MessageId = log.MessageId,
+            Name = log.Name,
+            AgentId = log.AgentId,
+            Role = log.Role,
+            Source = log.Source,
+            Content = log.Content,
+            CreatedTime = log.CreatedTime
+        };
+
+        await _dc.ContentLogs.InsertOneAsync(logDoc);
+    }
+
+    public async Task<DateTimePagination<ContentLogOutputModel>> GetConversationContentLogs(string conversationId, ConversationLogFilter filter)
+    {
+        var builder = Builders<ConversationContentLogDocument>.Filter;
+        var logFilters = new List<FilterDefinition<ConversationContentLogDocument>>
+        {
+            builder.Eq(x => x.ConversationId, conversationId),
+            builder.Lt(x => x.CreatedTime, filter.StartTime)
+        };
+        var logSortDef = Builders<ConversationContentLogDocument>.Sort.Descending(x => x.CreatedTime);
+
+        var docs = await _dc.ContentLogs.Find(builder.And(logFilters)).Sort(logSortDef).Limit(filter.Size).ToListAsync();
+        var logs = docs.Select(x => new ContentLogOutputModel
+        {
+            ConversationId = x.ConversationId,
+            MessageId = x.MessageId,
+            Name = x.Name,
+            AgentId = x.AgentId,
+            Role = x.Role,
+            Source = x.Source,
+            Content = x.Content,
+            CreatedTime = x.CreatedTime
+        }).ToList();
+
+        logs.Reverse();
+        return new DateTimePagination<ContentLogOutputModel>
+        {
+            Items = logs,
+            Count = logs.Count,
+            NextTime = logs.FirstOrDefault()?.CreatedTime
+        };
+    }
+    #endregion
+
+    #region Conversation State Log
+    public async Task SaveConversationStateLog(ConversationStateLogModel log)
+    {
+        if (log == null) return;
+
+        var filter = Builders<ConversationDocument>.Filter.Eq(x => x.Id, log.ConversationId);
+        var found = await _dc.Conversations.Find(filter).FirstOrDefaultAsync();
+        if (found == null) return;
+
+        var logDoc = new ConversationStateLogDocument
+        {
+            ConversationId = log.ConversationId,
+            AgentId= log.AgentId,
+            MessageId = log.MessageId,
+            States = log.States,
+            CreatedTime = log.CreatedTime
+        };
+
+        await _dc.StateLogs.InsertOneAsync(logDoc);
+    }
+
+    public async Task<DateTimePagination<ConversationStateLogModel>> GetConversationStateLogs(string conversationId, ConversationLogFilter filter)
+    {
+        var builder = Builders<ConversationStateLogDocument>.Filter;
+        var logFilters = new List<FilterDefinition<ConversationStateLogDocument>>
+        {
+            builder.Eq(x => x.ConversationId, conversationId),
+            builder.Lt(x => x.CreatedTime, filter.StartTime)
+        };
+        var logSortDef = Builders<ConversationStateLogDocument>.Sort.Descending(x => x.CreatedTime);
+
+        var docs = await _dc.StateLogs.Find(builder.And(logFilters)).Sort(logSortDef).Limit(filter.Size).ToListAsync();
+        var logs = docs.Select(x => new ConversationStateLogModel
+        {
+            ConversationId = x.ConversationId,
+            AgentId = x.AgentId,
+            MessageId = x.MessageId,
+            States = x.States,
+            CreatedTime = x.CreatedTime
+        }).ToList();
+
+        logs.Reverse();
+        return new DateTimePagination<ConversationStateLogModel>
+        {
+            Items = logs,
+            Count = logs.Count,
+            NextTime = logs.FirstOrDefault()?.CreatedTime
+        };
+    }
+    #endregion
+
+    #region Log Cleanup
+    public async Task<int> DeleteOldConversationLogs(int retentionDays, int batchSize)
+    {
+        if (retentionDays <= 0) return 0;
+        var threshold = DateTime.UtcNow.AddDays(-retentionDays);
+
+        var contentLogFilter = Builders<ConversationContentLogDocument>.Filter.Lt(x => x.CreatedTime, threshold);
+        var stateLogFilter = Builders<ConversationStateLogDocument>.Filter.Lt(x => x.CreatedTime, threshold);
+
+        var contentDocsToDelete = await _dc.ContentLogs.Find(contentLogFilter).Limit(batchSize).Project(x => x.Id).ToListAsync();
+        long contentDeletedCount = 0;
+        if (contentDocsToDelete.Any())
+        {
+            var deleteFilter = Builders<ConversationContentLogDocument>.Filter.In(x => x.Id, contentDocsToDelete);
+            var contentDeleted = await _dc.ContentLogs.DeleteManyAsync(deleteFilter);
+            contentDeletedCount = contentDeleted.DeletedCount;
+        }
+
+        var stateDocsToDelete = await _dc.StateLogs.Find(stateLogFilter).Limit(batchSize).Project(x => x.Id).ToListAsync();
+        long stateDeletedCount = 0;
+        if (stateDocsToDelete.Any())
+        {
+            var deleteFilter = Builders<ConversationStateLogDocument>.Filter.In(x => x.Id, stateDocsToDelete);
+            var stateDeleted = await _dc.StateLogs.DeleteManyAsync(deleteFilter);
+            stateDeletedCount = stateDeleted.DeletedCount;
+        }
+
+        return (int)(contentDeletedCount + stateDeletedCount);
+    }
+    #endregion
+
+    #region Instruction Log
+    public async Task<bool> SaveInstructionLogs(IEnumerable<InstructionLogModel> logs)
+    {
+        if (logs.IsNullOrEmpty())
+        {
+            return false;
+        }
+
+        var docs = new List<InstructionLogDocument>();
+        foreach (var log in logs)
+        {
+            var doc = InstructionLogDocument.ToMongoModel(log);
+            foreach (var pair in log.States)
+            {
+                try
+                {
+                    var jsonStr = JsonSerializer.Serialize(new
+                    {
+                        Data = JsonDocument.Parse(pair.Value),
+                        StringfyData = pair.Value
+                    }, _botSharpOptions.JsonSerializerOptions);
+                    var json = BsonDocument.Parse(jsonStr);
+                    doc.States[pair.Key] = json;
+                }
+                catch
+                {
+                    var jsonStr = JsonSerializer.Serialize(new
+                    {
+                        Data = pair.Value,
+                        StringfyData = pair.Value
+                    }, _botSharpOptions.JsonSerializerOptions);
+                    var json = BsonDocument.Parse(jsonStr);
+                    doc.States[pair.Key] = json;
+                }
+            }
+            docs.Add(doc);
+        }
+
+        await _dc.InstructionLogs.InsertManyAsync(docs);
+        return true;
+    }
+
+    public async Task<bool> UpdateInstructionLogStates(UpdateInstructionLogStatesModel updateInstructionStates)
+    {
+        if (string.IsNullOrWhiteSpace(updateInstructionStates?.LogId)
+            || updateInstructionStates?.States?.Any() != true)
+        {
+            return false;
+        }
+
+        var id = updateInstructionStates?.LogId;
+        var logDoc = await _dc.InstructionLogs.Find(p => p.Id == id).FirstOrDefaultAsync();
+        if (logDoc == null)
+        {
+            return false;
+        }
+
+        foreach (var pair in updateInstructionStates.States)
+        {
+            var key = updateInstructionStates.StateKeyPrefix + pair.Key;
+            try
+            {
+                var jsonStr = JsonSerializer.Serialize(new
+                {
+                    Data = JsonDocument.Parse(pair.Value),
+                    StringfyData = pair.Value
+                }, _botSharpOptions.JsonSerializerOptions);
+                var json = BsonDocument.Parse(jsonStr);
+                logDoc.States[key] = json;
+            }
+            catch
+            {
+                var jsonStr = JsonSerializer.Serialize(new
+                {
+                    Data = pair.Value,
+                    StringfyData = pair.Value
+                }, _botSharpOptions.JsonSerializerOptions);
+                var json = BsonDocument.Parse(jsonStr);
+                logDoc.States[key] = json;
+            }
+        }
+        await _dc.InstructionLogs.ReplaceOneAsync(p => p.Id == id, logDoc);
+        return true;
+    }
+
+    public async Task<PagedItems<InstructionLogModel>> GetInstructionLogs(InstructLogFilter filter)
+    {
+        if (filter == null)
+        {
+            filter = InstructLogFilter.Empty();
+        }
+
+        var logBuilder = Builders<InstructionLogDocument>.Filter;
+        var logFilters = new List<FilterDefinition<InstructionLogDocument>>() { logBuilder.Empty };
+
+        // Filter logs
+        if (!filter.AgentIds.IsNullOrEmpty())
+        {
+            logFilters.Add(logBuilder.In(x => x.AgentId, filter.AgentIds));
+        }
+        if (!filter.Providers.IsNullOrEmpty())
+        {
+            logFilters.Add(logBuilder.In(x => x.Provider, filter.Providers));
+        }
+        if (!filter.Models.IsNullOrEmpty())
+        {
+            logFilters.Add(logBuilder.In(x => x.Model, filter.Models));
+        }
+        if (!filter.TemplateNames.IsNullOrEmpty())
+        {
+            logFilters.Add(logBuilder.In(x => x.TemplateName, filter.TemplateNames));
+        }
+        if (!string.IsNullOrEmpty(filter.SimilarTemplateName))
+        {
+            logFilters.Add(logBuilder.Regex(x => x.TemplateName, new BsonRegularExpression(filter.SimilarTemplateName, "i")));
+        }
+        if (filter.StartTime.HasValue)
+        {
+            logFilters.Add(logBuilder.Gte(x => x.CreatedTime, filter.StartTime.Value));
+        }
+        if (filter.EndTime.HasValue)
+        {
+            logFilters.Add(logBuilder.Lte(x => x.CreatedTime, filter.EndTime.Value));
+        }
+
+        // Filter states
+        if (filter != null && !filter.States.IsNullOrEmpty())
+        {
+            foreach (var pair in filter.States)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key)) continue;
+
+                // Format key
+                var keys = pair.Key.Split(".").ToList();
+                keys.Insert(1, "data");
+                keys.Insert(0, "States");
+                var formattedKey = string.Join(".", keys);
+
+                if (string.IsNullOrWhiteSpace(pair.Value))
+                {
+                    logFilters.Add(logBuilder.Exists(formattedKey));
+                }
+                else if (bool.TryParse(pair.Value, out var boolValue))
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, boolValue));
+                }
+                else if (int.TryParse(pair.Value, out var intValue))
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, intValue));
+                }
+                else if (decimal.TryParse(pair.Value, out var decimalValue))
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, decimalValue));
+                }
+                else if (float.TryParse(pair.Value, out var floatValue))
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, floatValue));
+                }
+                else if (double.TryParse(pair.Value, out var doubleValue))
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, doubleValue));
+                }
+                else
+                {
+                    logFilters.Add(logBuilder.Eq(formattedKey, pair.Value));
+                }
+            }
+        }
+
+        var filterDef = logBuilder.And(logFilters);
+        var sortDef = Builders<InstructionLogDocument>.Sort.Descending(x => x.CreatedTime);
+
+        var docsTask = _dc.InstructionLogs.FindAsync(filterDef, options: new()
+        {
+            Sort = sortDef,
+            Skip = filter.Offset,
+            Limit = filter.Size
+        });
+        var countTask = _dc.InstructionLogs.CountDocumentsAsync(filterDef);
+        await Task.WhenAll([docsTask, countTask]);
+
+        var docs = docsTask.Result.ToList();
+        var count = countTask.Result;
+
+        var logs = docs.Select(x =>
+        {
+            var log = InstructionLogDocument.ToDomainModel(x);
+            log.States = x.States.ToDictionary(p => p.Key, p =>
+            {
+                var jsonStr = p.Value.ToJson();
+                var jsonDoc = JsonDocument.Parse(jsonStr);
+                var data = jsonDoc.RootElement.GetProperty("data");
+                return data.ValueKind != JsonValueKind.Null ? data.ToString() : null;
+            });
+            return log;
+        }).ToList();
+
+        return new PagedItems<InstructionLogModel>
+        {
+            Items = logs,
+            Count = count
+        };
+    }
+
+    public async Task<List<string>> GetInstructionLogSearchKeys(InstructLogKeysFilter filter)
+    {
+        var builder = Builders<InstructionLogDocument>.Filter;
+        var sortDef = Builders<InstructionLogDocument>.Sort.Descending(x => x.CreatedTime);
+        var filters = new List<FilterDefinition<InstructionLogDocument>>()
+        {
+            builder.Exists(x => x.States),
+            builder.Ne(x => x.States, [])
+        };
+
+        if (!filter.AgentIds.IsNullOrEmpty())
+        {
+            filters.Add(builder.In(x => x.AgentId, filter.AgentIds));
+        }
+        if (!filter.UserIds.IsNullOrEmpty())
+        {
+            filters.Add(builder.In(x => x.UserId, filter.UserIds));
+        }
+        if (filter.StartTime.HasValue)
+        {
+            filters.Add(builder.Gte(x => x.CreatedTime, filter.StartTime.Value));
+        }
+        if (filter.EndTime.HasValue)
+        {
+            filters.Add(builder.Lte(x => x.CreatedTime, filter.EndTime.Value));
+        }
+
+        var convDocs = await _dc.InstructionLogs.Find(builder.And(filters))
+                                          .Sort(sortDef)
+                                          .Limit(filter.LogLimit)
+                                          .ToListAsync();
+        var keys = convDocs.SelectMany(x => x.States.Select(x => x.Key)).Distinct().ToList();
+        return keys;
+    }
+    #endregion
+}

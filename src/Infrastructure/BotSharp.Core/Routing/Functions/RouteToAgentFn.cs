@@ -1,0 +1,93 @@
+using BotSharp.Abstraction.Functions;
+using BotSharp.Abstraction.Infrastructures.Enums;
+using BotSharp.Abstraction.Routing.Models;
+
+namespace BotSharp.Core.Routing;
+
+/// <summary>
+/// Router calls this function to set the Active Agent according to the context
+/// </summary>
+public partial class RouteToAgentFn : IFunctionCallback
+{
+    public string Name => "route_to_agent";
+    private readonly IServiceProvider _services;
+    private readonly IRoutingContext _context;
+#if DEBUG
+    public string Indication => "Routing to the specified AI agent...";
+#else
+    public string Indication => "Thinking...";
+#endif
+
+    public RouteToAgentFn(IServiceProvider services, IRoutingContext context)
+    {
+        _services = services;
+        _context = context;
+    }
+
+    public async Task<bool> Execute(RoleDialogModel message)
+    {
+        var args = JsonSerializer.Deserialize<RoutingArgs>(message.FunctionArgs);
+        var states = _services.GetRequiredService<IConversationStateService>();
+
+        // Push original task agent
+        if (!string.IsNullOrEmpty(args.OriginalAgent) && args.OriginalAgent.Length < 32)
+        {
+            // Correct user goal agent to keep orignal task
+            var goalAgentInState = states.GetState(StateConst.USER_GOAL_AGENT, string.Empty);
+            if (args.OriginalAgent != goalAgentInState)
+            {
+                states.SetState(StateConst.USER_GOAL_AGENT, args.OriginalAgent, isNeedVersion: true);
+            }
+
+            var db = _services.GetRequiredService<IBotSharpRepository>();
+            var filter = new AgentFilter { AgentNames = [args.OriginalAgent] };
+            var originalAgent = (await db.GetAgents(filter)).FirstOrDefault();
+            if (originalAgent != null)
+            {
+                await _context.Push(originalAgent.Id, "user goal agent");
+            }
+        }
+
+        // Push next action agent
+        if (!string.IsNullOrEmpty(args.AgentName) && args.AgentName.Length < 32)
+        {
+            await _context.Push(args.AgentName, args.NextActionReason);
+            states.SetState(StateConst.NEXT_ACTION_AGENT, args.AgentName, isNeedVersion: true);
+        }
+
+        if (string.IsNullOrEmpty(args.AgentName))
+        {
+            message.Content = $"missing agent name";
+        }
+        else
+        {
+            var db = _services.GetRequiredService<IBotSharpRepository>();
+            var filter = new AgentFilter { AgentNames = [args.AgentName] };
+            var targetAgent = (await db.GetAgents(filter)).FirstOrDefault();
+            if (targetAgent == null)
+            {
+                message.Data = JsonSerializer.Deserialize<JsonElement>(message.FunctionArgs);
+                return false;
+            }
+
+            if (targetAgent.Disabled)
+            {
+                return false;
+            }
+
+            var routing = _services.GetRequiredService<IRoutingService>();
+            var (missingfield, reason, agentId) = await routing.HasMissingRequiredField(message);
+            if (missingfield && message.CurrentAgentId != agentId)
+            {
+                // Stack redirection agent
+                await _context.Push(agentId, reason: $"REDIRECTION {reason}");
+                message.Content = reason;
+                states.SetState(StateConst.AGENT_REDIRECTION_REASON, reason, isNeedVersion: false);
+            }
+        }
+
+        message.CurrentAgentId = _context.GetCurrentAgentId();
+
+        return true;
+    }
+}

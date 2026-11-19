@@ -1,0 +1,59 @@
+using BotSharp.Abstraction.MessageHub.Observers;
+
+namespace BotSharp.Core.MessageHub.Observers;
+
+public class ConversationObserver : BotSharpObserverBase<HubObserveData<RoleDialogModel>>
+{
+    private readonly ILogger<ConversationObserver> _logger;
+    private readonly IServiceProvider _services;
+
+    public ConversationObserver(
+        IServiceProvider services,
+        ILogger<ConversationObserver> logger) : base()
+    {
+        _services = services;
+        _logger = logger;
+    }
+
+    public override string Name => nameof(ConversationObserver);
+
+    public override void OnCompleted()
+    {
+        _logger.LogWarning($"{nameof(ConversationObserver)} receives complete notification.");
+    }
+
+    public override void OnError(Exception error)
+    {
+        _logger.LogError(error, $"{nameof(ConversationObserver)} receives error notification: {error.Message}");
+    }
+
+    public override void OnNext(HubObserveData<RoleDialogModel> value)
+    {
+        var conv = _services.GetRequiredService<IConversationService>();
+        var storage = _services.GetRequiredService<IConversationStorage>();
+        var routingCtx = _services.GetRequiredService<IRoutingContext>();
+
+        if (value.EventName == ChatEvent.OnIndicationReceived)
+        {
+
+            _logger.LogDebug($"[{nameof(ConversationObserver)}]: Receive {value.EventName} => {value.Data.Indication} ({conv.ConversationId})");
+
+        }
+        else if (value.EventName == ChatEvent.OnIntermediateMessageReceivedFromAssistant)
+        {
+            _logger.LogDebug($"[{nameof(ConversationObserver)}]: Receive {value.EventName} => {value.Data.Content} ({conv.ConversationId})");
+
+            routingCtx.AddDialogs([value.Data]);
+            if (value.SaveDataToDb)
+            {
+                storage.Append(conv.ConversationId, value.Data).ConfigureAwait(false).GetAwaiter().GetResult();
+            }
+        }
+
+        // Hoisted out of the branches above, which only ever reached a listener for OnIndicationReceived.
+        if (_listeners.TryGetValue(value.EventName, out var func) && func != null)
+        {
+            func(value).ConfigureAwait(false).GetAwaiter().GetResult();
+        }
+    }
+}

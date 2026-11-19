@@ -1,0 +1,107 @@
+using BotSharp.Abstraction.Hooks;
+using BotSharp.Abstraction.Realtime.Models;
+using BotSharp.Plugin.Twilio.Models;
+using Task = System.Threading.Tasks.Task;
+
+namespace BotSharp.Plugin.Twilio.Interfaces;
+
+public interface ITwilioSessionHook : IHookBase
+{
+    /// <summary>
+    /// Establishes the operator identity synchronously at the HTTP entry points only; the WebSocket and background flows manage identity separately.
+    /// </summary>
+    /// <param name="request"></param>
+    void OnAuthenticate(ConversationalVoiceRequest request);
+
+    /// <summary>
+    /// Before session creating
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnSessionCreating(ConversationalVoiceRequest request, ConversationalVoiceResponse response)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// On session created
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnSessionCreated(ConversationalVoiceRequest request)
+        => Task.CompletedTask;
+
+    Task OnStreamingStarted(RealtimeHubConnection conn)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// On received user message
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnReceivedUserMessage(ConversationalVoiceRequest request)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Waiting user response
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnWaitingUserResponse(ConversationalVoiceRequest request, ConversationalVoiceResponse response)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Waiting agent response
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnWaitingAgentResponse(ConversationalVoiceRequest request, ConversationalVoiceResponse response)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Before agent responsing
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnAgentResponsing(ConversationalVoiceRequest request, ConversationalVoiceResponse response)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// On agent hang up
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnAgentHangUp(ConversationalVoiceRequest request)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// The caller hung up while talking to the agent (a ConversationRelay session ended with the call completed and no
+    /// handoff from the agent)
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    Task OnCallerHangUp(ConversationalVoiceRequest request)
+        => Task.CompletedTask;
+
+    /// <summary>
+    /// Before agent transferred
+    /// </summary>
+    /// <param name="request"></param>
+    /// <param name="response"></param>
+    /// <returns></returns>
+    Task OnAgentTransferring(ConversationalVoiceRequest request, TwilioSetting settings)
+    => Task.CompletedTask;
+
+    /// <summary>
+    /// Allow Twilio to reconnect when it's in streaming mode.
+    /// </summary>
+    /// <param name="message"></param>
+    /// <returns></returns>
+    Task<bool> ShouldReconnect(ConversationalVoiceRequest request, RoleDialogModel message)
+        => Task.FromResult(false);
+}

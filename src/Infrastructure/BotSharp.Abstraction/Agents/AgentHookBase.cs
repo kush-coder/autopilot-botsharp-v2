@@ -1,0 +1,71 @@
+using BotSharp.Abstraction.Agents.Settings;
+using BotSharp.Abstraction.Functions.Models;
+
+namespace BotSharp.Abstraction.Agents;
+
+public abstract class AgentHookBase : IAgentHook
+{
+    public abstract string SelfId { get; }
+
+    public virtual bool IsMatch(string agentId)
+        => string.IsNullOrEmpty(SelfId) || SelfId == agentId;
+
+    protected Agent _agent;
+    public Agent Agent => _agent;
+    
+    protected readonly IServiceProvider _services;
+    protected readonly AgentSettings _settings;
+
+    public AgentHookBase(IServiceProvider services, AgentSettings settings)
+    {
+        _services = services;
+        _settings = settings;
+    }
+
+    public void SetAgent(Agent agent)
+    {
+        _agent = agent;
+    }
+
+    public virtual Task<string?> OnAgentLoading(string id)
+    {
+        return Task.FromResult<string?>(id);
+    }
+
+    public virtual Task<bool> OnInstructionLoaded(string template, IDictionary<string, object> dict)
+    {
+        dict["current_date"] = $"{DateTime.Now:MMM dd, yyyy}";
+        dict["current_time"] = $"{DateTime.Now:hh:mm tt}";
+        dict["current_weekday"] = $"{DateTime.Now:dddd}";
+        dict["current_utc_datetime"] = $"{DateTime.UtcNow}";
+
+        return Task.FromResult(true);
+    }
+
+    public virtual Task<bool> OnFunctionsLoaded(List<FunctionDef> functions)
+    {
+        _agent.Functions = functions;
+        return Task.FromResult(true);
+    }
+
+    public virtual Task<bool> OnSamplesLoaded(List<string> samples)
+    {
+        _agent.Samples = samples;
+        return Task.FromResult(true);
+    }
+
+    public virtual Task OnAgentLoaded(Agent agent)
+    {
+        return Task.CompletedTask;
+    }
+
+    public virtual Task OnAgentUtilityLoaded(Agent agent)
+    {
+        return Task.CompletedTask;
+    }
+
+    public virtual Task OnAgentMcpToolLoaded(Agent agent)
+    {
+        return Task.CompletedTask;
+    }
+}

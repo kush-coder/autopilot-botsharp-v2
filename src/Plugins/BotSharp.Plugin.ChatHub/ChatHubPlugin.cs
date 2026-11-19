@@ -1,0 +1,39 @@
+﻿using BotSharp.Abstraction.MessageHub.Models;
+using BotSharp.Abstraction.MessageHub.Observers;
+using BotSharp.Plugin.ChatHub.Hooks;
+using BotSharp.Plugin.ChatHub.Observers;
+using Microsoft.Extensions.Configuration;
+
+namespace BotSharp.Plugin.ChatHub;
+
+/// <summary>
+/// The dialogue channel connects users, AI assistants and customer service representatives.
+/// </summary>
+public class ChatHubPlugin : IBotSharpPlugin
+{
+    public string Id => "6e52d42d-1e23-406b-8599-36af36c83209";
+    public string Name => "Chat Hub";
+    public string Description => "A communication channel connects agents and users in real-time.";
+    public string IconUrl => "https://media.zeemly.com/media/product/chatrandom.png";
+
+    public void RegisterDI(IServiceCollection services, IConfiguration config)
+    {
+        var settings = new ChatHubSettings();
+        config.Bind("ChatHub", settings);
+        services.AddSingleton(x => settings);
+
+        // One per process: it holds a delivery chain per target, so it has to outlive any scope.
+        // Everything that reaches SignalR goes through it, which is what keeps a stalled client
+        // from stopping the thread that produced the event. See ChatEventDispatcher.
+        services.AddSingleton<ChatEventDispatcher>();
+
+        services.AddScoped<IBotSharpObserver<HubObserveData<RoleDialogModel>>, ChatHubObserver>();
+
+        // Register hooks
+        services.AddScoped<IConversationHook, ChatHubConversationHook>();
+        services.AddScoped<IConversationHook, StreamingLogHook>();
+        services.AddScoped<IConversationHook, WelcomeHook>();
+        services.AddScoped<IRoutingHook, StreamingLogHook>();
+        services.AddScoped<IContentGeneratingHook, StreamingLogHook>();
+    }
+}

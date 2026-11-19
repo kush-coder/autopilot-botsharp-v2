@@ -1,0 +1,244 @@
+using BotSharp.Abstraction.Conversations.Enums;
+using BotSharp.Abstraction.Functions.Models;
+using BotSharp.Abstraction.Messaging;
+using BotSharp.Abstraction.Messaging.Models.RichContent;
+using System.Diagnostics;
+
+namespace BotSharp.Abstraction.Conversations.Models;
+
+[DebuggerStepThrough]
+public class RoleDialogModel : ITrackableMessage
+{
+    /// <summary>
+    /// If Role is Assistant, it is same as user's message id.
+    /// </summary>
+    public string MessageId { get; set; }
+
+    /// <summary>
+    /// The message type
+    /// </summary>
+    public string MessageType { get; set; } = MessageTypeName.Plain;
+
+    /// <summary>
+    /// When true, message is stored but omitted from default LLM history and routing <c>[CONVERSATION]</c> (orthogonal to <see cref="MessageType"/>).
+    /// </summary>
+    public bool ExcludeFromContext { get; set; }
+
+    /// <summary>
+    /// The message label
+    /// </summary>
+    public string? MessageLabel { get; set; }
+
+    /// <summary>
+    /// user, system, assistant, function
+    /// </summary>
+    public string Role { get; set; }
+
+    /// <summary>
+    /// User id when Role is User
+    /// </summary>
+    public string SenderId { get; set; }
+
+    [JsonPropertyName("created_at")]
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public string Content { get; set; }
+
+    public string? SecondaryContent { get; set; }
+
+    /// <summary>
+    /// Postback of previous round payload
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("payload")]
+    public string? Payload { get; set; }
+
+    /// <summary>
+    /// Indicator message used to provide UI feedback for function execution
+    /// </summary>
+    public string? Indication { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string CurrentAgentId { get; set; }
+
+    /// <summary>
+    /// Function name if LLM response function call
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FunctionName { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PostbackFunctionName { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FunctionArgs { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolCallId { get; set; }
+
+    /// <summary>
+    /// Every tool call this reply asked for, in the order the model produced them, or null when
+    /// it asked for none.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FunctionName"/>, <see cref="FunctionArgs"/> and <see cref="ToolCallId"/> beside
+    /// this are the first entry, so a caller that can only run one call keeps working unchanged;
+    /// a caller that can run several reads this instead. The one difference is name repair: the
+    /// single field carries the normalized name it always has, while entries here keep the name
+    /// the model actually sent.
+    /// <para>
+    /// Deliberately not copied by <see cref="From"/>: this describes one model reply, and a
+    /// message derived from that reply -- a tool result, an assistant answer -- is not it.
+    /// </para>
+    /// </remarks>
+    public List<LlmToolCall>? ToolCalls { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string?>? Thought { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string?>? MetaData { get; set; }
+
+    /// <summary>
+    /// Set this flag is in OnFunctionExecuting, if true, it won't be executed by InvokeFunction.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public bool Handled { get; set; } = false;
+
+    /// <summary>
+    /// Function execution structured data, this data won't pass to LLM.
+    /// It's ideal to render in rich content in UI.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? Data { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public string ImageUrl { get; set; }
+
+    /// <summary>
+    /// Remember to set Message.Content as well
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RichContent<IRichMessage>? RichContent { get; set; }
+
+    /// <summary>
+    /// Rich content for secondary language
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RichContent<IRichMessage>? SecondaryRichContent { get; set; }
+
+    /// <summary>
+    /// Stop conversation completion
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public bool StopCompletion { get; set; }
+
+    public FunctionCallFromLlm Instruction { get; set; }
+
+    /// <summary>
+    /// Files to be used in conversation
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<BotSharpFile>? Files { get; set; }
+
+    /// <summary>
+    /// The images generated by AI
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("generated_images")]
+    public List<ImageGeneration>? GeneratedImages { get; set; }
+
+    /// <summary>
+    /// The web annotations generated by AI
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("annotations")]
+    public List<ChatAnnotation>? Annotations { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public string RenderedInstruction { get; set; } = string.Empty;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public bool IsStreaming { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public bool IsFromUser => Role == AgentRole.User;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public bool IsFromAssistant => Role == AgentRole.Assistant || Role == AgentRole.Model;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
+    public string LlmContent
+    {
+        get
+        {
+            var text = Content;
+            if (Role == AgentRole.User)
+            {
+                text = !string.IsNullOrWhiteSpace(Payload) ? Payload : Content;
+            }
+
+            return text;
+        }
+    }
+
+    public RoleDialogModel()
+    {
+    }
+
+    public RoleDialogModel(string role, string text)
+    {
+        Role = role;
+        Content = text;
+        MessageId = Guid.NewGuid().ToString();
+        MessageType = MessageTypeName.Plain;
+    }
+
+    public override string ToString()
+    {
+        if (Role == AgentRole.Function)
+        {
+            return $"{Role}: {Content} <= {FunctionName}({FunctionArgs})";
+        }
+        else
+        {
+            return $"{Role}: {Content}";
+        }
+    }
+
+    public static RoleDialogModel From(RoleDialogModel source,
+        string? role = null,
+        string? content = null)
+    {
+        return new RoleDialogModel(role ?? source.Role, content ?? source.Content)
+        {
+            CurrentAgentId = source.CurrentAgentId,
+            MessageId = source.MessageId,
+            MessageType = source.MessageType,
+            ExcludeFromContext = source.ExcludeFromContext,
+            MessageLabel = source.MessageLabel,
+            ToolCallId = source.ToolCallId,
+            FunctionName = source.FunctionName,
+            FunctionArgs = source.FunctionArgs,
+            Indication = source.Indication,
+            PostbackFunctionName = source.PostbackFunctionName,
+            RichContent = source.RichContent,
+            Payload = source.Payload,
+            StopCompletion = source.StopCompletion,
+            Instruction = source.Instruction,
+            Data = source.Data,
+            IsStreaming = source.IsStreaming,
+            Annotations = source.Annotations,
+            Thought = source.Thought != null ? new(source.Thought) : null,
+            MetaData = source.MetaData != null ? new(source.MetaData) : null
+        };
+    }
+
+    public void ClearMessage()
+    {
+        this.Payload = null;
+        this.RichContent = null;
+        this.SecondaryContent = null;
+        this.SecondaryRichContent = null;
+    }
+}

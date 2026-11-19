@@ -1,0 +1,151 @@
+using BotSharp.Abstraction.Hooks;
+using BotSharp.Abstraction.Infrastructures.Enums;
+using BotSharp.Abstraction.Routing.Models;
+using System.Collections.Concurrent;
+
+namespace BotSharp.Core.Agents.Services;
+
+public partial class AgentService
+{
+    public static ConcurrentDictionary<string, ConcurrentDictionary<string, string>> AgentParameterTypes = new();
+
+    // [SharpCache(10, perInstanceCache: true)]
+    public async Task<Agent> LoadAgent(string id, bool loadUtility = true)
+    {
+        if (string.IsNullOrEmpty(id) || id == Guid.Empty.ToString())
+        {
+            return null;
+        }
+
+        var hooks = _services.GetHooks<IAgentHook>(id);
+        foreach (var hook in hooks)
+        {
+            var newId = await hook.OnAgentLoading(id);
+            if (!string.IsNullOrEmpty(newId) && newId != id)
+            {
+                id = newId;
+                break; // Only the first hook that redirects takes effect
+            }
+        }
+
+        var agent = await GetAgent(id);
+        if (agent == null)
+        {
+            return null;
+        }
+
+        agent.TemplateDict = [];
+        agent.SecondaryInstructions = [];
+        agent.SecondaryFunctions = [];
+
+        await InheritAgent(agent);
+        OverrideInstructionByChannel(agent);
+        AddOrUpdateParameters(agent);
+
+        // Populate state
+        PopulateState(agent);
+
+        // After agent is loaded
+        await HookEmitter.Emit<IAgentHook>(_services, async hook => {
+            hook.SetAgent(agent);
+
+            if (!string.IsNullOrEmpty(agent.Instruction))
+            {
+                await hook.OnInstructionLoaded(agent.Instruction, agent.TemplateDict);
+            }
+
+            if (agent.Functions != null)
+            {
+                await hook.OnFunctionsLoaded(agent.Functions);
+            }
+
+            if (agent.Samples != null)
+            {
+                await hook.OnSamplesLoaded(agent.Samples);
+            }
+
+            if (loadUtility && !agent.Utilities.IsNullOrEmpty())
+            {
+                await hook.OnAgentUtilityLoaded(agent);
+            }
+
+            if (!agent.McpTools.IsNullOrEmpty())
+            {
+                await hook.OnAgentMcpToolLoaded(agent);
+            }
+
+            await hook.OnAgentLoaded(agent);
+
+        }, id);
+
+        _logger.LogInformation($"Loaded agent {agent}.");
+
+        return agent;
+    }
+
+    private void OverrideInstructionByChannel(Agent agent)
+    {
+        var instructions = new List<ChannelInstruction>(agent.ChannelInstructions);
+        if (instructions.IsNullOrEmpty())
+        {
+            return;
+        }
+
+        var state = _services.GetRequiredService<IConversationStateService>();
+        var channel = state.GetState(StateConst.CHANNEL);
+        
+        var found = instructions.FirstOrDefault(x => x.Channel.IsEqualTo(channel));
+        var defaultInstruction = instructions.FirstOrDefault(x => string.IsNullOrEmpty(x.Channel));
+        agent.Instruction = !string.IsNullOrWhiteSpace(found?.Instruction) ? found.Instruction : defaultInstruction?.Instruction;
+    }
+
+    private void PopulateState(Agent agent)
+    {
+        agent.TemplateDict = new(CollectRenderData(agent));
+    }
+
+    private void AddOrUpdateParameters(Agent agent)
+    {
+        var agentId = agent.Id ?? agent.Name;
+        if (AgentParameterTypes.ContainsKey(agentId))
+        {
+            return;
+        }
+
+        AddOrUpdateRoutesParameters(agentId, agent.RoutingRules);
+        AddOrUpdateFunctionsParameters(agentId, agent.Functions);
+    }
+
+    private void AddOrUpdateRoutesParameters(string agentId, List<RoutingRule> routingRules)
+    {
+        var parameterTypes = AgentParameterTypes.GetOrAdd(agentId, _ => new());
+
+        foreach (var rule in routingRules.Where(x => x.Required))
+        {
+            if (string.IsNullOrEmpty(rule.FieldType))
+            {
+                continue;
+            }
+            parameterTypes[rule.Field] = rule.FieldType;
+        }
+    }
+
+    private void AddOrUpdateFunctionsParameters(string agentId, List<FunctionDef> functions)
+    {
+        var parameterTypes = AgentParameterTypes.GetOrAdd(agentId, _ => new());
+
+        var parameters = functions.Select(p => p.Parameters);
+        foreach (var param in parameters)
+        {
+            foreach (JsonProperty prop in param.Properties.RootElement.EnumerateObject())
+            {
+                var name = prop.Name;
+                var node = prop.Value;
+                if (node.TryGetProperty("type", out var type))
+                {
+                    parameterTypes[name] = type.GetString();
+                }
+            }
+        }
+    }
+}

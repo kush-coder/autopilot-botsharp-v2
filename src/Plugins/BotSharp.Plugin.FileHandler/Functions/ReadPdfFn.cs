@@ -1,0 +1,172 @@
+using BotSharp.Abstraction.Routing;
+
+namespace BotSharp.Plugin.FileHandler.Functions;
+
+public class ReadPdfFn : IFunctionCallback
+{
+    public string Name => "util-file-read_pdf";
+    public string Indication => "Reading pdf";
+
+    private readonly IServiceProvider _services;
+    private readonly ILogger<ReadPdfFn> _logger;
+    private readonly FileHandlerSettings _settings;
+
+    private readonly IEnumerable<string> _pdfContentTypes = new List<string>
+    {
+        MediaTypeNames.Application.Pdf
+    };
+
+    public ReadPdfFn(
+        IServiceProvider services,
+        ILogger<ReadPdfFn> logger,
+        FileHandlerSettings settings)
+    {
+        _services = services;
+        _logger = logger;
+        _settings = settings;
+    }
+
+    public async Task<bool> Execute(RoleDialogModel message)
+    {
+        var args = JsonSerializer.Deserialize<LlmContextIn>(message.FunctionArgs);
+        var agentService = _services.GetRequiredService<IAgentService>();
+        var conv = _services.GetRequiredService<IConversationService>();
+        var routingCtx = _services.GetRequiredService<IRoutingContext>();
+        
+        var fromAgent = await agentService.GetAgent(message.CurrentAgentId);
+        var agent = new Agent
+        {
+            Id = fromAgent?.Id ?? BuiltInAgentId.FileAssistant,
+            Name = fromAgent?.Name ?? "File Assistant",
+            Instruction = fromAgent?.Instruction ?? args?.UserRequest ?? "Please describe the pdf file(s).",
+            LlmConfig = fromAgent?.LlmConfig ?? new()
+        };
+
+        var wholeDialogs = routingCtx.GetDialogs();
+        if (wholeDialogs.IsNullOrEmpty())
+        {
+            wholeDialogs = await conv.GetDialogHistory();
+        }
+
+        var dialogs = await AssembleFiles(conv.ConversationId, wholeDialogs);
+        var response = await GetChatCompletion(agent, dialogs);
+        dialogs.ForEach(x => x.Files = null);
+        message.Content = response;
+        return true;
+    }
+
+    private async Task<List<RoleDialogModel>> AssembleFiles(string conversationId, List<RoleDialogModel> dialogs)
+    {
+        if (dialogs.IsNullOrEmpty())
+        {
+            return new List<RoleDialogModel>();
+        }
+
+        var fileStorage = _services.GetRequiredService<IFileStorageService>();
+        var messageIds = dialogs.Select(x => x.MessageId).Distinct().ToList();
+
+        IEnumerable<MessageFileModel> files;
+        if (_settings.Pdf?.Reading?.ConvertToImage == true)
+        {
+            files = await fileStorage.GetMessageFileScreenshotsAsync(conversationId, messageIds, options: new()
+            {
+                Sources = [FileSource.User],
+                ImageConvertProvider = _settings.Pdf?.Reading?.ImageConverter?.Provider
+            });
+        }
+        else
+        {
+            files = fileStorage.GetMessageFiles(conversationId, messageIds, options: new()
+            {
+                Sources = [FileSource.User],
+                ContentTypes = _pdfContentTypes
+            });
+        }
+
+
+        if (files.IsNullOrEmpty())
+        {
+            return dialogs;
+        }
+
+        foreach (var dialog in dialogs)
+        {
+            var found = files.Where(x => x.MessageId == dialog.MessageId).ToList();
+            if (found.IsNullOrEmpty()) continue;
+
+            var targets = found;
+            if (dialog.IsFromUser)
+            {
+                targets = found.Where(x => x.FileSource.IsEqualTo(FileSource.User)).ToList();
+            }
+            else if (dialog.IsFromAssistant)
+            {
+                targets = found.Where(x => x.FileSource.IsEqualTo(FileSource.Bot)).ToList();
+            }
+
+            dialog.Files = targets.Select(x => new BotSharpFile
+            {
+                ContentType = x.ContentType,
+                FileUrl = x.FileUrl,
+                FileStorageUrl = x.FileStorageUrl,
+                FileName = x.FileName,
+                FileExtension = x.FileExtension
+            }).ToList();
+        }
+
+        return dialogs;
+    }
+
+    private async Task<string> GetChatCompletion(Agent agent, List<RoleDialogModel> dialogs)
+    {
+        try
+        {
+            var (provider, model) = GetLlmProviderModel();
+            SetImageDetailLevel();
+            var completion = CompletionProvider.GetChatCompletion(_services, provider: provider, model: model);
+            var response = await completion.GetChatCompletions(agent, dialogs);
+            return response.Content;
+        }
+        catch (Exception ex)
+        {
+            var error = $"Error when analyzing pdf file(s).";
+            _logger.LogWarning(ex, $"{error}");
+            return error;
+        }
+    }
+
+    private (string, string) GetLlmProviderModel()
+    {
+        var provider = _settings?.Pdf?.Reading?.Provider;
+        var model = _settings?.Pdf?.Reading?.Model;
+
+        if (!string.IsNullOrEmpty(provider) && !string.IsNullOrEmpty(model))
+        {
+            return (provider, model);
+        }
+
+        provider = "google-ai";
+        model = "gemini-3.8-flash";
+
+        return (provider, model);
+    }
+
+    private void SetImageDetailLevel()
+    {
+        if (_settings.Pdf?.Reading?.ConvertToImage != true)
+        {
+            return;
+        }
+
+        var state = _services.GetRequiredService<IConversationStateService>();
+        var fileSettings = _services.GetRequiredService<FileHandlerSettings>();
+
+        var key = "chat_image_detail_level";
+        var level = state.GetState(key);
+
+        if (string.IsNullOrWhiteSpace(level) && !string.IsNullOrWhiteSpace(fileSettings.Pdf?.Reading?.ImageDetailLevel))
+        {
+            state.SetState(key, fileSettings.Pdf.Reading.ImageDetailLevel);
+        }
+    }
+}
